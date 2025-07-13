@@ -14,21 +14,23 @@ pub struct BookTickerUpdate {
 
 #[derive(Deserialize)]
 pub struct BookTickerUpdateData {
-    pub u: u64,
+    pub e: String,
+    #[serde(rename = "E")]
+    pub e2: i64,
     pub s: String,
-    pub b: String,
-    #[serde(rename = "B")]
-    pub b2: String,
-    pub a: String,
-    #[serde(rename = "A")]
-    pub a2: String,
+    pub t: i64,
+    pub p: String,
+    pub q: String,
+    #[serde(rename = "T")]
+    pub t2: i64,
+    pub m: bool,
 }
 
 #[tokio::main]
 async fn main() {
     
     let url_str =
-        String::from("wss://fstream.binance.com/stream?streams=ethusdt@bookTicker");
+        String::from("wss://fstream.binance.com/stream?streams=ethusdt@trade");
         
     let (ws_stream, _) = connect_async(url_str).await.expect("Failed to connect");
     let (_write, mut read) = ws_stream.split();
@@ -50,7 +52,7 @@ async fn main() {
                 let tick_data: Value = serde_json::from_str(&text).unwrap();
                 let msg_type = &tick_data["data"]["e"];
 
-                if msg_type == "bookTicker" {
+                if msg_type == "trade" {
                     let book_stamp: BookTickerUpdate = serde_json::from_str(&text).unwrap();
                     
                     current_bar_stamps.push(book_stamp);
@@ -105,34 +107,37 @@ fn process_footprint_bar(book_stamp_vec: &Vec<BookTickerUpdate>) -> FootprintBar
         };
     }
 
-    let mut footprint_map: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut footprint_map: HashMap<String, (f64, f64)> = HashMap::new();
 
-    let first_price = book_stamp_vec[0].data.a.parse::<f64>().unwrap_or(0.0);
-    let last_price = book_stamp_vec[book_stamp_vec.len() - 1].data.a.parse::<f64>().unwrap_or(0.0);
+    let first_price = book_stamp_vec[0].data.p.parse::<f64>().unwrap_or(0.0);
+    let last_price = book_stamp_vec[book_stamp_vec.len() - 1].data.p.parse::<f64>().unwrap_or(0.0);
     
     let mut high = first_price;
     let mut low = first_price;
     let mut total_volume = 0f64;
 
     for stamp in book_stamp_vec {
-        let ask_price = stamp.data.a.parse::<f64>().unwrap_or(0.0);
-        let bid_price = stamp.data.b.parse::<f64>().unwrap_or(0.0);
 
-        let price = (ask_price + bid_price) / 2.0;
-        
-        let ask_size = stamp.data.a2.parse::<f64>().unwrap_or(0.0);
-        let bid_size = stamp.data.b2.parse::<f64>().unwrap_or(0.0);
+        let price = stamp.data.p.parse::<f64>().unwrap_or(0.0);
+        let size = stamp.data.q.parse::<f64>().unwrap_or(0.0);
+
+        // println!("Trade: price={}, size={}, m={}", price, size, stamp.data.m);
 
         if price > high { high = price; } 
         if price < low { low = price; }
 
-        total_volume += ask_size + bid_size;
+        total_volume += size;
 
         let price_key = format!("{:.4}", price);
-        let entry = footprint_map.entry(price_key).or_insert((0, 0));
+        let entry = footprint_map.entry(price_key).or_insert((0.0, 0.0));
 
-        entry.0 += bid_size as u64; // Buy side
-        entry.1 += ask_size as u64; // Sell side (Ask or Sell)
+        if stamp.data.m {
+            // m = true: buyer is market maker (passive), so seller was aggressive
+            entry.1 += size; // Sell side
+        } else {
+            // m = false: buyer is market taker (aggressive)
+            entry.0 += size; // Buy side
+        }
     }
 
     let footprint_json = serde_json::to_string(&footprint_map).unwrap_or_else(|_| "{}".to_string());
